@@ -8,9 +8,38 @@ from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings
 import os  # Imports the os module for environment variable access
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional
+import uvicorn
 
 # Load environment variables from the .env file
 load_dotenv()
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Define request and response models
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+
+class ChatResponse(BaseModel):
+    response: str
+    conversation_id: str
+
+# Global variables to store conversation chains
+conversation_chains = {}
 
 def create_rag_chatbot():
     # Initialize the embedding model
@@ -60,42 +89,53 @@ def create_rag_chatbot():
     # Create vector store
     vectorstore = load_documents("documents")
     
-    # Create a conversation chain with memory
-    conversation = ConversationChain(
-        llm=llm,  # Passes the initialized model
-        memory=ConversationBufferMemory(),  # Uses buffer memory to store conversation history
-        verbose=True  # Enables verbose output for debugging
-    )
-    
-    return conversation, vectorstore
+    return vectorstore
 
-def main():
-    # Create the RAG chatbot
-    chatbot, vectorstore = create_rag_chatbot()
-    
-    print("Welcome to the RAG-powered LangChain Chatbot! Type 'quit' to exit.")  # Displays a welcome message
-    
-    while True:
-        # Get user input and strip any leading/trailing whitespace
-        user_input = input("\nYou: ").strip()
+# Initialize the vector store
+vectorstore = create_rag_chatbot()
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    try:
+        # Get or create conversation chain
+        if request.conversation_id not in conversation_chains:
+            conversation_chains[request.conversation_id] = ConversationChain(
+                llm=ChatOpenAI(temperature=0.7, model_name="gpt-3.5-turbo"),
+                memory=ConversationBufferMemory(),
+                verbose=True
+            )
         
-        # Check if the user wants to quit the program
-        if user_input.lower() == 'quit':
-            print("Goodbye!")  # Displays a goodbye message
-            # Persist the vector store before exiting
-            vectorstore.persist()
-            break  # Exits the loop
+        conversation = conversation_chains[request.conversation_id]
         
         # Retrieve relevant documents
-        relevant_docs = vectorstore.similarity_search(user_input, k=3)
+        relevant_docs = vectorstore.similarity_search(request.message, k=3)
         context = "\n".join([doc.page_content for doc in relevant_docs])
         
-        # Combine user input with retrieved context
-        augmented_input = f"Context: {context}\n\nUser question: {user_input}"
+        # Create augmented input
+        augmented_input = f"""You are a medical assistant. Use the following context to answer the user's question. 
+If the context doesn't contain relevant information, say so.
+
+Context:
+{context}
+
+User question: {request.message}
+
+Answer:"""
         
-        # Get response from the chatbot
-        response = chatbot.predict(input=augmented_input)
-        print(f"\nBot: {response}")  # Displays the bot's response
+        # Get response
+        response = conversation.predict(input=augmented_input)
+        
+        return ChatResponse(
+            response=response,
+            conversation_id=request.conversation_id or "new_conversation"
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
-    main()  # Ensures the main function is called when the script is run directly
+    uvicorn.run(app, host="0.0.0.0", port=8000);
