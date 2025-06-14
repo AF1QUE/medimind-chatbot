@@ -24,26 +24,41 @@ def create_rag_chatbot():
     
     # Load and process documents
     def load_documents(directory_path):
-        loader = DirectoryLoader(directory_path, glob="**/*.txt", loader_cls=TextLoader)
-        documents = loader.load()
+        # Check if vector store already exists
+        persist_directory = "./chroma_db"
         
-        # Split documents into chunks
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200
-        )
-        splits = text_splitter.split_documents(documents)
-        
-        # Create vector store
-        vectorstore = Chroma.from_documents(
-            documents=splits,
-            embedding=embeddings
-        )
+        if os.path.exists(persist_directory):
+            print("Loading existing vector store...")
+            vectorstore = Chroma(
+                persist_directory=persist_directory,
+                embedding_function=embeddings
+            )
+        else:
+            print("Creating new vector store...")
+            # Load documents
+            loader = DirectoryLoader(directory_path, glob="**/*.txt", loader_cls=TextLoader)
+            documents = loader.load()
+            
+            # Split documents into chunks
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200
+            )
+            splits = text_splitter.split_documents(documents)
+            
+            # Create and persist vector store
+            vectorstore = Chroma.from_documents(
+                documents=splits,
+                embedding=embeddings,
+                persist_directory=persist_directory
+            )
+            # Explicitly persist the database
+            vectorstore.persist()
         
         return vectorstore
     
-    # Create vector store (you'll need to specify your documents directory)
-    vectorstore = load_documents("documents")  # This will look for all .txt files in the documents directory
+    # Create vector store
+    vectorstore = load_documents("documents")
     
     # Create a conversation chain with memory
     conversation = ConversationChain(
@@ -67,6 +82,8 @@ def main():
         # Check if the user wants to quit the program
         if user_input.lower() == 'quit':
             print("Goodbye!")  # Displays a goodbye message
+            # Persist the vector store before exiting
+            vectorstore.persist()
             break  # Exits the loop
         
         # Retrieve relevant documents
